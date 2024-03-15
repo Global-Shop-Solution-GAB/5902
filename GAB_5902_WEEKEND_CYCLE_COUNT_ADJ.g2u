@@ -1,0 +1,154 @@
+Program.Sub.Preflight.Start
+Program.Sub.Preflight.End
+
+Program.Sub.Main.Start
+v.Local.lDayOfTheWeek.Declare
+'Grab a list of all parts next weekend scheduled to be cycle counted
+'Divide total qty by 5
+'Change cycle count date to M-F for 1/5th of the parts
+'Screenless, can be ran on online update or custom menu option
+'Modified by RC 12-18-22, changed logic to run for current Sunday and yesterday.  This way calculate next cycle date can be run every Friday without impacting the program
+
+'Check if they are running on sunday, otherwise close out
+f.Intrinsic.Date.Weekday(v.Ambient.Date,v.Local.lDayOfTheWeek)
+f.Intrinsic.Control.If(v.Local.lDayOfTheWeek,<>,1)
+	f.Intrinsic.Control.End
+f.Intrinsic.Control.EndIf
+
+f.Intrinsic.Control.CallSub(LoadCycleCountPartsDatatable)
+'Make sure there are actually parts to count
+f.Intrinsic.Control.If(v.DataTable.dtCycleCountParts.ActiveRowCount--,=,0)
+	f.Intrinsic.Control.End
+f.Intrinsic.Control.EndIf
+f.Intrinsic.Control.CallSub(CalculateNumberOfPartsPerWeekday)
+f.Intrinsic.Control.CallSub(WriteNewCycleCountDateToDB)
+f.Intrinsic.Control.CallSub(GenerateLog)
+Program.Sub.Main.End
+
+Program.Sub.LoadCycleCountPartsDatatable.Start
+v.Local.sSQL.Declare
+v.Local.dStartDate.Declare
+v.Local.dEndDate.Declare
+
+'v.Local.dEndDate.Set(2022-12-18)
+v.Local.dEndDate.Set(v.Ambient.Date)
+f.Intrinsic.Date.DateAdd("D",-1,v.Local.dEndDate,v.Local.dStartDate)
+
+'f.Intrinsic.Date.EndOfWeek(v.Ambient.Date,v.Local.dStartDate)
+'f.Intrinsic.Date.DateAdd("D",1,v.Local.dStartDate,v.Local.dEndDate)
+
+f.Intrinsic.String.Build("SELECT PART, LOCATION, DATE_CYCLE, 'XXXXXX' AS NEWCYCLEDATE FROM V_INVENTORY_ALL WHERE DATE_CYCLE BETWEEN '{0}' AND '{1}' ORDER BY DATE_CYCLE ASC;",v.Local.dStartDate.PervasiveDate,v.Local.dEndDate.PervasiveDate,v.Local.sSQL)
+
+f.ODBC.Connection!conx.opencompanyconnection
+
+f.Data.Datatable.CreateFromSQL("dtCycleCountParts","conx",v.Local.sSQL,True)
+
+f.ODBC.Connection!conx.Close
+Program.Sub.LoadCycleCountPartsDatatable.End
+
+Program.Sub.CalculateNumberOfPartsPerWeekday.Start
+v.Local.iNumberOfPartsPerWeekday.Declare
+
+'Divide number of parts by 5 days in the work week
+f.Intrinsic.Math.IDiv(v.DataTable.dtCycleCountParts.RowCount--,5,v.Local.iNumberOfPartsPerWeekday)
+f.Intrinsic.Control.CallSub(SetNewCycleCountDate,"NumberOfParts",v.Local.iNumberOfPartsPerWeekday)
+Program.Sub.CalculateNumberOfPartsPerWeekday.End
+
+Program.Sub.SetNewCycleCountDate.Start
+'Passed variable NumberOfParts
+v.Local.iCount.Declare
+v.Local.iPartCount.Declare
+v.Local.dStartDate.Declare
+v.Local.sFilter.Declare
+V.Local.dNewCycleCountDate.Declare
+v.Local.sReturn.Declare
+V.Local.iStartPartInterval.Declare
+v.Local.iEndPartInterval.Declare
+v.Local.sNewCycleCountDate.Declare
+v.Local.sNewCycleCountMonth.Declare
+v.Local.sNewCycleCountDay.Declare
+v.Local.sNewCycleCountYear.Declare
+
+v.Local.dStartDate.Set(v.DataTable.dtCycleCountParts(0).DATE_CYCLE!FieldVal)
+v.Local.iEndPartInterval.set(v.Args.NumberOfParts)
+f.Intrinsic.Date.DateAdd("D",1,v.Ambient.Date,v.Local.dNewCycleCountDate)
+
+'loop through 5 times to set the cycle count date to be each day of the week for the passed number of parts
+f.Intrinsic.Control.For(v.Local.iCount,1,5,1)
+
+	'convert date to readable, then split on "-", then assign to proper variable, grab right 2 characters for year, then build to proper year format
+	v.Local.sNewCycleCountDate.Set(v.Local.dNewCycleCountDate.PervasiveDate)
+	f.Intrinsic.String.Split(v.Local.sNewCycleCountDate,"-",v.Local.sNewCycleCountDate)
+	v.Local.sNewCycleCountMonth.Set(v.Local.sNewCycleCountDate(1))
+	v.Local.sNewCycleCountDay.Set(v.Local.sNewCycleCountDate(2))
+	f.Intrinsic.String.Right(v.Local.sNewCycleCountDate(0),2,v.Local.sNewCycleCountYear)
+	f.Intrinsic.String.Build("{0}{1}{2}",v.Local.sNewCycleCountYear,v.Local.sNewCycleCountMonth,v.Local.sNewCycleCountDay,v.Local.sNewCycleCountDate)
+	
+	'if it's friday then make sure we're capturing all the remaining parts.  Most likely number of parts to be changed does not divide evenly by 5
+	f.Intrinsic.Control.If(v.Local.iCount,=,5)
+		v.Local.iEndPartInterval.Set(v.DataTable.dtCycleCountParts.RowCount--)
+	f.Intrinsic.Control.EndIf
+	
+	'loop through number of parts to be changed to each day of the week
+	F.Intrinsic.Control.For(V.Local.iPartCount,v.Local.iStartPartInterval,v.Local.iEndPartInterval,1)
+		f.Intrinsic.Control.Try
+			f.Data.Datatable.SetValue("dtCycleCountParts",v.Local.iPartCount,"NEWCYCLEDATE",V.Local.sNewCycleCountDate)
+		f.Intrinsic.Control.Catch
+		f.Intrinsic.Control.EndTry
+	F.Intrinsic.Control.Next(V.Local.iPartCount)
+	
+	'Make the start part interval for the next iteration be ending number plus 1
+	f.Intrinsic.Math.Add(v.Local.iEndPartInterval,1,v.Local.iStartPartInterval)
+	f.Intrinsic.Math.Add(v.Local.iEndPartInterval,v.Args.NumberOfParts,v.Local.iEndPartInterval)
+	
+	'Move to the next day in the week
+	f.Intrinsic.Date.DateAdd("D",1,v.Local.dNewCycleCountDate,v.Local.dNewCycleCountDate)
+f.Intrinsic.Control.Next(v.Local.iCount)
+
+Program.Sub.SetNewCycleCountDate.End
+
+Program.Sub.WriteNewCycleCountDateToDB.Start
+v.Local.sSQL.Declare
+v.Local.iCount.Declare
+
+F.ODBC.Connection!CONX.OPENCOMPANYCONNECTION
+
+'Loop Through the DT and write the new cycle count date to the DB
+f.Intrinsic.Control.For(v.Local.iCount,0,v.DataTable.dtCycleCountParts.RowCount--,1)
+	f.Intrinsic.String.Build("UPDATE INVENTORY_MST2 SET DATE_CYCLE = '{0}' WHERE PART = '{1}' AND LOCATION = '{2}';",V.DataTable.dtCycleCountParts(V.Local.iCount).NEWCYCLEDATE!FieldVal,V.DataTable.dtCycleCountParts(V.Local.iCount).PART!FieldValTrim,V.DataTable.dtCycleCountParts(V.Local.iCount).LOCATION!FieldValTrim,V.Local.sSQL)
+	F.Intrinsic.Control.Try
+		F.ODBC.Connection!CONX.Execute(V.Local.sSQL)
+	F.Intrinsic.Control.Catch
+	F.Intrinsic.Control.EndTry
+f.Intrinsic.Control.Next(v.Local.iCount)
+
+F.ODBC.Connection!CONX.Close
+Program.Sub.WriteNewCycleCountDateToDB.End
+
+Program.Sub.GenerateLog.Start
+v.Local.sFilePath.Declare
+v.Local.bDirectoryExists.Declare
+
+'check if directory exists...saveToCSV will not create it automatically
+f.Intrinsic.String.Build("{0}\CycleCountUpdateLogs",v.Caller.FilesDir,v.Local.sFilePath)
+f.Intrinsic.File.DirExists(v.Local.sFilePath,v.Local.bDirectoryExists)
+f.Intrinsic.Control.If(v.Local.bDirectoryExists.Not)
+	f.Intrinsic.Control.Try
+		f.Intrinsic.File.CreateDir(v.Local.sFilePath)
+	f.Intrinsic.Control.Catch
+	f.Intrinsic.Control.EndTry
+f.Intrinsic.Control.EndIf
+
+'save to CSV
+f.Intrinsic.String.Build("{0}\CycleCountUpdate-{1}.txt",v.Local.sFilePath,v.Ambient.Date.PervasiveDate,v.Local.sFilePath)
+f.Intrinsic.Control.Try
+	f.Data.Datatable.SaveToCSV("dtCycleCountParts",v.Local.sFilePath,True)
+f.Intrinsic.Control.Catch
+f.Intrinsic.Control.EndTry
+f.Data.Datatable.Close("dtCycleCountParts")
+Program.Sub.GenerateLog.End
+
+Program.Sub.Comments.Start
+${$5$}$3.0.0.0$}$1
+${$6$}$tmaynard$}$20200229121353274$}$xKE69A43uzVyrAkuo5z9kVZmFtNSRbWXR25HPWIfJDdSTPsTOD/F+6bdFf3xhxlab3ixwVK2p66CNTZ/53b8Ng==
+Program.Sub.Comments.End
